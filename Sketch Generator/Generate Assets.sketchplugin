@@ -1,0 +1,417 @@
+// (ctrl cmd alt g)
+// This command is a recreation of the Photoshop Generator functionality,
+// introduced by Adobe on Photoshop CC <http://blogs.adobe.com/photoshopdotcom/2013/09/introducing-adobe-generator-for-photoshop-cc.html>
+
+var generator = {
+      version: "0.1",
+      regexp: /\.png\d*\s*|\.jpg\d*\s*|\.gif\s*|\.svg\s*|\.eps\s*|\.pdf\s*|\.tif\s*|\d+%+|\d+\s*x\s*\d+/g
+    },
+    document_path = [[doc fileURL] path].split([doc displayName])[0],
+    document_name = [doc displayName].replace(".sketch",""),
+    assets_folder = document_path + "/" + document_name + "-assets",
+    file_manager = [NSFileManager defaultManager],
+    current_page_name,
+    current_artboard_name,
+    total_assets = 0;
+
+Array.prototype.each = function(callback){
+  var count = 0;
+  for (var i = 0; i < this.length(); i++){
+    var el = this[i];
+    callback.call(this,el,count);
+    count++;
+  }
+}
+
+/*
+This is a port to JSTalk of <https://github.com/leighmcculloch/AppSandboxFileAccess>
+
+Here's the original license for AppSandboxFileAccess:
+
+## License
+
+Copyright (c) 2013, Leigh McCulloch All rights reserved.
+
+BSD-2-Clause License: http://opensource.org/licenses/BSD-2-Clause
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice,
+  this list of conditions and the following disclaimer.
+
+- Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
+var AppSandboxFileAccessPersist = {
+  keyForBookmarkDataForURL: function(url) {
+    log("AppSandboxFileAccessPersist.keyForBookmarkDataForURL("+url+")")
+    var urlStr = [url absoluteString];
+    log("> " + [NSString stringWithFormat:@"bd_%1$@", urlStr])
+    return [NSString stringWithFormat:@"bd_%1$@", urlStr];
+  },
+  bookmarkDataForURL: function(url) {
+    log("AppSandboxFileAccessPersist.bookmarkDataForURL('"+ url +"')")
+    var defaults = [NSUserDefaults standardUserDefaults];
+
+    // loop through the bookmarks one path at a time down the URL
+    var subUrl = url;
+    while ([subUrl path].length() > 1) { // give up when only '/' is left in the path
+      var key = AppSandboxFileAccessPersist.keyForBookmarkDataForURL(subUrl);
+      var bookmark = [defaults dataForKey:key];
+      if (bookmark) { // if a bookmark is found, return it
+        return bookmark;
+      }
+      subUrl = [subUrl URLByDeletingLastPathComponent];
+    }
+    // no bookmarks for the URL, or parent to the URL were found
+    return nil;
+  },
+  setBookmarkData: function(data, url) {
+    log("AppSandboxFileAccessPersist.setBookmarkData")
+    log("data: " + data)
+    log("URL: " + url)
+    var defaults = [NSUserDefaults standardUserDefaults];
+    var key = AppSandboxFileAccessPersist.keyForBookmarkDataForURL(url);
+    [defaults setObject:data forKey:key];
+  }
+}
+
+var AppSandboxFileAccess = {
+  init: function(opts){
+    this.message = opts.message || "Please authorize Sketch to write to this folder. You will only need to do this once."
+    this.prompt = opts.prompt || "Authorize",
+    this.title = opts.title || "Sketch Authorization"
+    return this;
+  },
+  askPermissionForUrl: function(url) {
+    log("AppSandboxFileAccess.askPermissionForUrl("+url+")")
+    // this url will be the url allowed, it might be a parent url of the url passed in
+    var allowedUrl;
+
+    // create delegate that will limit which files in the open panel can be selected, to ensure only a folder
+    // or file giving permission to the file requested can be selected
+    // AppSandboxFileAccessOpenSavePanelDelegate *openPanelDelegate = [[AppSandboxFileAccessOpenSavePanelDelegate alloc] initWithFileURL:url];
+
+    // check that the url exists, if it doesn't, find the parent path of the url that does exist and ask permission for that
+    var fileManager = [NSFileManager defaultManager];
+    var path = [url path];
+    while (path.length() > 1) { // give up when only '/' is left in the path or if we get to a path that exists
+      if ([fileManager fileExistsAtPath:path]) {
+        break;
+      }
+      path = [path stringByDeletingLastPathComponent];
+    }
+    log("Looks like we have a winner: " + path)
+    url = [NSURL fileURLWithPath:path];
+
+    // display the open panel
+    var openPanel = [NSOpenPanel openPanel];
+    [openPanel setMessage:this.message];
+    [openPanel setPrompt:this.prompt];
+    [openPanel setTitle:this.title];
+    // [openPanel setDelegate:openPanelDelegate];
+    [openPanel setCanCreateDirectories:NO];
+    [openPanel setCanChooseFiles:YES];
+    [openPanel setCanChooseDirectories:YES];
+    [openPanel setAllowsMultipleSelection:NO];
+    [openPanel setShowsHiddenFiles:NO];
+    [openPanel setExtensionHidden:NO];
+    [openPanel setDirectoryURL:url];
+    [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+    var openPanelButtonPressed = [openPanel runModal];
+    if (openPanelButtonPressed == NSFileHandlingPanelOKButton) {
+      allowedUrl = [openPanel URL];
+    }
+    return allowedUrl;
+  },
+  persistPermissionPath: function(path) {
+    this.persistPermissionURL([NSURL fileURLWithPath:path]);
+  },
+  persistPermissionURL: function(url) {
+    log("AppSandboxFileAccess.persistPermissionURL("+url+")")
+    // store the sandbox permissions
+    url = [[url URLByStandardizingPath] URLByResolvingSymlinksInPath]
+    var bookmarkData = [url bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope
+                           includingResourceValuesForKeys:nil
+                           relativeToURL:nil
+                           error:null];
+    if (bookmarkData) {
+      AppSandboxFileAccessPersist.setBookmarkData(bookmarkData, url);
+    }
+  },
+  accessFilePath_withBlock_persistPermission: function(path, block, persist) {
+    log("AppSandboxFileAccess.accessFilePath_withBlock_persistPermission")
+    log("path: " + path)
+    return AppSandboxFileAccess.accessFileURL_withBlock_persistPermission([NSURL fileURLWithPath:path], block, persist);
+  },
+  accessFileURL_withBlock_persistPermission: function(fileUrl, block, persist) {
+    log("AppSandboxFileAccess.accessFileURL_withBlock_persistPermission")
+    log("fileUrl: " + fileUrl)
+    log("block: " + block)
+    log("persist: " + persist)
+    var allowedUrl = false;
+    // standardize the file url and remove any symlinks so that the url we lookup in bookmark data would match a url given by the askPermissionForUrl method
+    var fileUrl = [[fileUrl URLByStandardizingPath] URLByResolvingSymlinksInPath];
+    // lookup bookmark data for this url, this will automatically load bookmark data for a parent path if we have it
+    var bookmarkData = AppSandboxFileAccessPersist.bookmarkDataForURL(fileUrl);
+
+    if (bookmarkData) {
+      log("Bookmark data found")
+      // resolve the bookmark data into an NSURL object that will allow us to use the file
+      var bookmarkDataIsStale;
+      allowedUrl = [NSURL URLByResolvingBookmarkData:bookmarkData options:NSURLBookmarkResolutionWithSecurityScope|NSURLBookmarkResolutionWithoutUI relativeToURL:nil bookmarkDataIsStale:bookmarkDataIsStale error:null];
+      // if the bookmark data is stale, we'll create new bookmark data further down
+      if (bookmarkDataIsStale) {
+        bookmarkData = nil;
+      }
+    } else {
+      log("No bookmark data found")
+    }
+
+    // if allowed url is nil, we need to ask the user for permission
+    if (!allowedUrl) {
+      allowedUrl = AppSandboxFileAccess.askPermissionForUrl(fileUrl);
+      if (!allowedUrl) {
+        // if the user did not give permission, exit out here
+        return false;
+      }
+    }
+    // if we have no bookmark data, we need to create it, this may be because our bookmark data was stale, or this is the first time being given permission
+    if (persist && !bookmarkData) {
+      AppSandboxFileAccess.persistPermissionURL(allowedUrl);
+    }
+    // execute the block with the file access permissions
+    try {
+      [allowedUrl startAccessingSecurityScopedResource];
+      block();
+    } finally {
+      [allowedUrl stopAccessingSecurityScopedResource];
+    }
+    return true;
+  }
+}
+function in_sandbox(){
+  var environ = [[NSProcessInfo processInfo] environment];
+  return (nil != [environ objectForKey:@"APP_SANDBOX_CONTAINER_ID"]);
+}
+var sandboxAccess = AppSandboxFileAccess.init({
+  message: "Please authorize Sketch to write to this folder. You will only need to do this once per folder.",
+  prompt:  "Authorize",
+  title: "Sketch Authorization"
+})
+
+function process_layer(layer) {
+  log('\t\tProcessing layer "' + [layer name] + '"');
+
+  if(should_export(layer)) {
+    var layer_metadata = get_data_from_layer(layer);
+    for(var i=0; i < layer_metadata.length; i++) {
+      export_layer(layer, layer_metadata[i]);
+    }
+  };
+
+  // Process sublayers
+  if (is_group(layer)) {
+    var sublayers = [layer layers]
+    for (var i = 0; i < [sublayers length]; i++) {
+      var layer = sublayers[i]
+      process_layer(layer);
+    }
+  }
+}
+function should_export(layer) {
+  log("\t\t\tShould we export " + layer + "?")
+  if ([layer name].match(generator.regexp)) {
+    log("\t\t\t\tYup")
+  } else {
+    log("\t\t\t\tNope")
+  }
+  return [layer name].match(generator.regexp);
+}
+function get_data_from_layer(layer) {
+
+  log('\t\t\tGetting data from ' + layer);
+
+  var name = [layer name],
+      assets = name.split(","),
+      assets_data = [];
+
+  for (var i = 0; i < assets.length; i++) {
+
+    var current_asset = assets[i],
+        filename = current_asset.replace(generator.regexp,'').trim(),
+        asset_metadata = {
+          name: filename,
+          filetype: current_asset.split(".")[1].substr(0,3),
+          // TODO: Add support for '@2x' and 'HDPI' style scales
+          scale: current_asset.match(/(\d+)%/) ? current_asset.match(/(\d+)%/)[1]/100.0 : 1.0
+        }
+
+    assets_data.push(asset_metadata);
+
+  }
+  return assets_data;
+}
+function sanitize_filename(name){
+  return name.replace(/(\s+|\:|\/)/g ,"_");//.replace(/_+/g,"_");
+}
+function export_layer(layer, options) {
+  log("\t\t\tExporting " + options.name + ", with scale: " + options.scale);
+
+  var filename = assets_folder + "/" + sanitize_filename(current_page_name) + "/" + sanitize_filename(current_artboard_name) + "/" + sanitize_filename(options.name);
+
+  // copy off-screen
+  var copy = [layer duplicate];
+  var frame = [copy frame];
+  [frame setX:-100000];
+  [frame setY:-100000];
+
+  // export
+  var rect = [copy rectByAccountingForStyleSize:[[copy absoluteRect] rect]]
+
+  // Look for '@bounds' layer
+  if ([copy class] != MSBitmapLayer) {
+    if ([copy layers]) {
+      log([copy name] + " has " + [[copy layers] length] + " sublayers")
+      for(var i=0; i < [[copy layers] length]; i++){
+        var sublayer = [copy layers][i];
+        if([sublayer name] == '@bounds'){
+          rect = [sublayer rectByAccountingForStyleSize:[[sublayer absoluteRect] rect]],
+          [sublayer setIsVisible:false];
+        }
+      }
+    }
+  }
+  var slice = [MSSlice sliceWithRect:rect scale:options.scale];
+
+  // TODO: add scale in filename?
+  // filename += "-" + options.scale + "x";
+  if (in_sandbox()) {
+    sandboxAccess.accessFilePath_withBlock_persistPermission(assets_folder, function(){
+      [doc saveArtboardOrSlice:slice toFile:(filename + "." + options.filetype)];
+    }, true)
+  } else {
+    [doc saveArtboardOrSlice:slice toFile:(filename + "." + options.filetype)];
+  }
+
+  // Remove copy
+  [copy removeFromParent];
+  total_assets++;
+}
+function is_group(layer) {
+  log("\t\t\tIs it a group?")
+  if ([layer isMemberOfClass:[MSLayerGroup class]]) {
+    log("\t\t\t\tYup")
+  } else {
+    log("\t\t\t\tNope")
+  }
+  return [layer isMemberOfClass:[MSLayerGroup class]];
+}
+function cleanup(){
+  log("Cleanup")
+  if ([file_manager fileExistsAtPath:assets_folder]) {
+    [file_manager removeItemAtPath:assets_folder error:nil];
+  }
+  log("Cleanup done")
+}
+
+function main(){
+  log("\r")
+  log("#####################################################################################")
+  log('# Sketch Generator running ##########################################################')
+  log("#####################################################################################")
+  log("\r")
+
+  // HACK: on a freshly started Sketch instance, 'selection' is null until you select an object
+  if (selection == null) {
+    log("Selection is not defined, yet")
+    selection = [[NSArray alloc] init]
+  }
+
+  if ([selection length] > 0) {
+    log("There's a selection, so export it instead of the whole document")
+    current_page_name = [[doc currentPage] name];
+    if ([[doc currentPage] artboards] > 0) {
+      current_artboard_name = [[[doc currentPage] currentArtboard] name];
+    } else {
+      current_artboard_name = ""
+    }
+    var selectionloop = [selection objectEnumerator]
+    while (layer = [selectionloop nextObject]) {
+      process_layer(layer);
+    }
+  } else {
+    log("No selection, export whole document")
+    cleanup();
+
+    // Traverse pages...
+    var pageloop = [[doc pages] objectEnumerator]
+    while (page = [pageloop nextObject]) {
+
+      [doc setCurrentPage:page];
+
+      current_page_name = [[doc currentPage] name];
+
+      log("-------------------------------------------------------------------------------------")
+      log("Traversing page: " + page)
+
+      // ...then artboards...
+      var artboards = [[doc currentPage] artboards];
+
+      if([artboards length] >= 1) {
+        var artboardloop = [artboards objectEnumerator]
+        while (artboard = [artboardloop nextObject]) {
+          current_artboard_name = [artboard name];
+          log("\tTraversing artboard: " + current_artboard_name);
+
+          // FIXME: don't export artboards named artboard.png inside a folder
+          // i.e: export doc-assets/page_1/foo.png instead of doc-assets/page_1/foo.png/foo.png
+          if(should_export(artboard)) {
+            process_layer(artboard);
+          }
+
+          var artboard_layers = [artboard layers]
+          log("\t\tWe have " + [artboard_layers count] + " layers in this artboard")
+          for(var i=0; i < [artboard_layers length]; i++){
+            var artboard_layer = artboard_layers[i]
+            process_layer(artboard_layer)
+          }
+        }
+      } else {
+        log("\tNo artboards in page...");
+        current_artboard_name = '';
+        var pagelayers = [page layers]
+        for (var i = 0; i < [pagelayers length]; i++) {
+          process_layer(pagelayers[i])
+        }
+      }
+    }
+  }
+}
+
+// Store start page, so we can return to it after exporting
+var start_time = new Date(),
+    start_page = [doc currentPage];
+
+// Let's go!
+main();
+
+// Restore start page
+[doc setCurrentPage:start_page];
+
+// Some stats
+[doc showMessage: "Sketch Generator: " + total_assets + " assets exported in " + ((new Date() - start_time) / 1000) + " seconds"];

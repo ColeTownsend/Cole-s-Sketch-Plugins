@@ -1,0 +1,100 @@
+// Sketch Plugin: Generate ICNS From Artboards (option shift command a)
+// Source: github.com/NathanRutzky/Generate-ICNS
+// Version: 1.0.5
+
+(function() {
+
+    var artboardCount = [[[doc currentPage] artboards] count]
+
+    if (![doc fileURL] || artboardCount < 5) {
+    
+        var error = [[NSTask alloc] init]
+        
+        [error setLaunchPath:"/bin/bash"]
+        [error setArguments:["-c", "afplay /System/Library/Sounds/Basso.aiff"]]
+        [error launch]
+        [doc showMessage:"Select ‘Mac App Icon’ from templates, then Save the document..."]
+    }
+    
+    else {
+    
+        for (var i=0; i < artboardCount; i++) {
+        
+            var artboard = [[doc currentPage] artboards][i],
+                artboardName = [artboard name]
+            
+            if (artboardName != "Lock") {
+            
+                var setting = [[NSProcessInfo processInfo] environment],
+                    sandbox = (nil != [setting objectForKey:@"APP_SANDBOX_CONTAINER_ID"]),
+                    filePath = [[doc fileURL] path].split([doc displayName])[0],
+                    fileName = ".icon.iconset/" + artboardName + ".png",
+                    fileFolder = filePath + fileName
+                                
+                if (sandbox) {
+                
+                    var userHome = "/Users/" + NSUserName(),
+                        userPath = [[[NSURL fileURLWithPath:userHome] URLByStandardizingPath] URLByResolvingSymlinksInPath],
+                        bookmark = [[NSUserDefaults standardUserDefaults] objectForKey:userHome]
+                        
+                    if (!bookmark) {
+                    
+                        var openPanel = [NSOpenPanel openPanel]
+                        
+                        [openPanel setTitle:"Sketch Authorization"]
+                        [openPanel setMessage:"Sketch.app needs permission to write to this directory."]
+                        [openPanel setPrompt:"Authorize"]
+                        [openPanel setCanChooseFiles:false]
+                        [openPanel setCanChooseDirectories:true]
+                        [openPanel setDirectoryURL:userPath]
+                        
+                        if ([openPanel runModal] == NSOKButton) {
+                        
+                            bookmarkURL = [openPanel URL]
+                            
+                        } else return false
+                
+                        bookmark = [userPath bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope
+                                    includingResourceValuesForKeys:nil
+                                    relativeToURL:nil
+                                    error:nil]
+                                    
+                        [[NSUserDefaults standardUserDefaults] setObject:bookmark forKey:userHome]
+                        [[NSUserDefaults standardUserDefaults] synchronize]
+                    }
+                    
+                    var bookmarkURL = [NSURL URLByResolvingBookmarkData:bookmark
+                        options:NSURLBookmarkResolutionWithSecurityScope
+                        relativeToURL:nil
+                        bookmarkDataIsStale:nil
+                        error:nil]
+                        
+                    if (bookmarkURL)
+                    
+                       [doc saveArtboardOrSlice:artboard toFile:fileFolder]
+                } else [doc saveArtboardOrSlice:artboard toFile:fileFolder]
+            }      
+        }
+        
+        var createIcon = [[NSTask alloc] init],
+            removeIcon = [[NSTask alloc] init],
+            createPath = "find ~/ -name '.icon.iconset' -execdir iconutil -c icns {} -o Icon.icns \\;",
+            removePath = "find ~/ -name '.icon.iconset' -exec rm -r {} \\;",
+            success = [[NSTask alloc] init]
+        
+            [createIcon setLaunchPath:"/bin/bash"]
+            [createIcon setArguments:["-c", createPath]]
+            [createIcon launch]
+            [createIcon waitUntilExit]
+                
+            [removeIcon setLaunchPath:"/bin/bash"]
+            [removeIcon setArguments:["-c", removePath]]
+            [removeIcon launch]
+            
+            [success setLaunchPath:"/bin/bash"]
+            [success setArguments:["-c", "afplay /System/Library/Sounds/Pop.aiff"]]
+            [success launch]
+            [doc showMessage:"Icon Complete..."]
+    }
+    
+})();
